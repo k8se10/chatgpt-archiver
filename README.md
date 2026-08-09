@@ -78,4 +78,7 @@ to fix is small and isolated: `chatgpt_archiver/api.py` (the endpoints) and
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Custom source-available license — free to use, modify, and fork, but not to
+resell, paywall, or otherwise charge for. See [LICENSE](LICENSE) for the
+full terms, including a required-attribution clause and a disclaimer about
+relying on an undocumented, internal ChatGPT API endpoint.
