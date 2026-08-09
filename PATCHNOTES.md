@@ -76,3 +76,12 @@ shapes that caused it, pulled live from chatgpt.com.
 ### Docs
 - Noted the large-account performance characteristics (throttled,
   per-conversation requests) under Known Limitations in `README.md`.
+- **Documented rate limiting as a permanent external constraint on large
+  archivals, not a bug.** `/backend-api/*` is ChatGPT's own internal
+  endpoint with no published quota — HTTP 429 partway through a
+  hundreds/thousands-conversation export is expected. The app's backoff
+  (see Fixed, above) gets it through eventually, but the wall-clock
+  ceiling for very large accounts is set by OpenAI's rate limits, not
+  anything tunable in this project. Added under Known Limitations in
+  `README.md`, with a pointer to the new Skip-existing-files option for
+  resuming an interrupted run.

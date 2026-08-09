@@ -75,6 +75,17 @@ Select the conversations you want, pick an output folder, and hit
   There's a progress bar and a running log so it's clear the app hasn't
   hung, but there's no fast path yet. If you only need a handful of
   conversations, select just those instead of "Select All".
+- **Rate limiting on large archivals is a permanent external constraint,
+  not a bug this app can fix.** `/backend-api/*` is ChatGPT's own
+  internal endpoint, not a public API with published quotas — for a
+  library in the hundreds/thousands, hitting HTTP 429 partway through is
+  expected, not exceptional. The app backs off and retries automatically
+  (see `ChatGPTSession` in `api.py`), which gets a full export through
+  eventually, but "eventually" can mean a genuinely long wall-clock time
+  for very large accounts, and that ceiling is set by OpenAI's rate
+  limits, not by anything tunable here. If a run gets interrupted, rerun
+  it with **Skip it** selected under file-conflict handling to resume
+  without re-exporting what already succeeded.
 
 ## Changelog
 
