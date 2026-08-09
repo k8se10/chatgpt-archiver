@@ -46,6 +46,15 @@ shapes that caused it, pulled live from chatgpt.com.
   formatters. This also silently affected the conversation list's date
   display the whole time (masked by a bare `except: pass`), now fixed too.
 
+- **Rate-limit/token-refresh waits were invisible in the packaged app —
+  looked frozen for up to 120s per retry.** The backoff messages only went
+  through Python's `logging` module, which has nowhere to go in a
+  PyInstaller `--windowed` build (no console attached) and was never
+  routed to the GUI's own log box either. `ChatGPTSession` now takes an
+  `on_wait` callback, wired to both the scrolling log and the progress
+  label, so "Rate limited by ChatGPT — waiting 10s… (attempt 2/6)" is
+  actually visible while it's happening.
+
 ### Added
 - **Progress bar + incremental log lines while listing conversations.**
   Listing a 1000+ conversation account previously gave zero feedback for

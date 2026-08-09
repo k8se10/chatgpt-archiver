@@ -115,6 +115,13 @@ class ArchiverApp(tk.Tk):
         self.progress.configure(maximum=max(total, 1), value=done)
         self.progress_label.configure(text=label or (f"{done}/{total}" if total else ""))
 
+    def _on_wait(self, message: str):
+        """Called from a background thread whenever a request has to pause
+        (token refresh, rate-limit backoff) — surface it so a multi-second/
+        minute wait doesn't look like the app has frozen."""
+        self._log(message)
+        self.after(0, lambda: self.progress_label.configure(text=message))
+
     # ── Connect / login flow ────────────────────────────────────────────
 
     def _on_connect(self):
@@ -126,7 +133,7 @@ class ArchiverApp(tk.Tk):
         try:
             if self._driver is None:
                 self._driver = browser.create_driver()
-                self._session = api.ChatGPTSession(self._driver)
+                self._session = api.ChatGPTSession(self._driver, on_wait=self._on_wait)
             api.ensure_on_chatgpt(self._driver)
             self._try_get_token()
         except Exception as e:

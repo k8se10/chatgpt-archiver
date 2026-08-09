@@ -102,9 +102,27 @@ def _fetch_with_status(driver: WebDriver, token: str, path: str) -> dict:
 class ChatGPTSession:
     """A driver + bearer token, resilient to token expiry and rate limiting mid-export."""
 
-    def __init__(self, driver: WebDriver, token: Optional[str] = None):
+    def __init__(
+        self,
+        driver: WebDriver,
+        token: Optional[str] = None,
+        on_wait: Optional[Callable[[str], None]] = None,
+    ):
         self.driver = driver
         self.token = token
+        # Called with a human-readable status line whenever a request has to
+        # pause (token refresh, rate-limit backoff) — a packaged --windowed
+        # exe has no console, so without this the GUI has no way to show
+        # that anything is happening during a multi-second/minute wait.
+        self.on_wait = on_wait
+
+    def _notify(self, message: str):
+        logger.warning(message)
+        if self.on_wait:
+            try:
+                self.on_wait(message)
+            except Exception:
+                pass
 
     def ensure_token(self) -> str:
         if not self.token:
@@ -122,9 +140,7 @@ class ChatGPTSession:
         detail = body.get("detail") if isinstance(body, dict) else body
 
         if status in (401, 403) and not _auth_retried:
-            logger.warning(
-                "Auth error (HTTP %s) on %s — refreshing token and retrying once.", status, path
-            )
+            self._notify(f"Session expired (HTTP {status}) — refreshing and retrying…")
             self.token = None
             return self._get(path, _auth_retried=True, _rate_limit_attempt=_rate_limit_attempt)
 
@@ -141,9 +157,9 @@ class ChatGPTSession:
             if wait is None:
                 wait = RATE_LIMIT_BASE_DELAY_SECS * (2 ** _rate_limit_attempt)
             wait = min(wait, RATE_LIMIT_MAX_DELAY_SECS)
-            logger.warning(
-                "Rate limited (HTTP 429) on %s — waiting %.0fs (attempt %d/%d).",
-                path, wait, _rate_limit_attempt + 1, RATE_LIMIT_MAX_RETRIES,
+            self._notify(
+                f"Rate limited by ChatGPT — waiting {wait:.0f}s before retrying "
+                f"(attempt {_rate_limit_attempt + 1}/{RATE_LIMIT_MAX_RETRIES})…"
             )
             time.sleep(wait)
             return self._get(
