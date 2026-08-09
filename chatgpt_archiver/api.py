@@ -7,11 +7,19 @@ authenticated fetch() — the same requests chatgpt.com's own frontend makes.
 We never read or decrypt anything from disk; we just ask the page to fetch
 on our behalf and hand the JSON back to Python.
 
-The bearer token handed out by /api/auth/session is short-lived. A full
-export of a large account (hundreds+ of conversations) can easily outlive
-it, so ChatGPTSession transparently refreshes and retries once whenever a
-response comes back auth-error-shaped, instead of letting a stale token
-silently masquerade as "this conversation has no messages".
+Two failure modes matter a lot for a full-account export (hundreds+ of
+conversations, each a separate request):
+
+- The bearer token from /api/auth/session is short-lived and can expire
+  mid-export. ChatGPTSession detects a 401/403 and transparently refreshes
+  + retries once.
+- The API itself rate-limits (429) under sustained request volume.
+  ChatGPTSession backs off (honouring Retry-After when present) and
+  retries several times rather than giving up on the first hit.
+
+Both are read from the real HTTP status code, not guessed from the shape
+of the response body — the earlier body-shape heuristic couldn't tell an
+expired token apart from a rate limit apart from any other error.
 """
 
 import json
@@ -24,7 +32,10 @@ from selenium.webdriver.chrome.webdriver import WebDriver
 logger = logging.getLogger(__name__)
 
 CHATGPT_URL = "https://chatgpt.com/"
-REQUEST_DELAY_SECS = 0.4  # be polite to the API when bulk-exporting
+REQUEST_DELAY_SECS = 0.6  # be polite to the API when bulk-exporting
+RATE_LIMIT_MAX_RETRIES = 6
+RATE_LIMIT_BASE_DELAY_SECS = 5.0
+RATE_LIMIT_MAX_DELAY_SECS = 120.0
 
 
 class AuthError(RuntimeError):
@@ -32,8 +43,7 @@ class AuthError(RuntimeError):
 
 
 class ApiError(RuntimeError):
-    """Raised when the ChatGPT API returns something unexpected that a token
-    refresh + retry couldn't fix."""
+    """Raised when the ChatGPT API returns something a refresh/backoff couldn't fix."""
 
 
 def _run_async_fetch(driver: WebDriver, js_fetch_expression: str):
@@ -74,22 +84,23 @@ def get_access_token(driver: WebDriver) -> str:
     return token
 
 
-def _fetch_json(driver: WebDriver, token: str, path: str) -> dict:
+def _fetch_with_status(driver: WebDriver, token: str, path: str) -> dict:
+    """Returns {status, ok, retryAfter, body} — the real HTTP outcome, not just the JSON."""
     js_headers = json.dumps({"Authorization": f"Bearer {token}"})
     js_path = json.dumps(path)
-    expr = (
-        f"fetch({js_path}, {{credentials: 'include', headers: {js_headers}}})"
-        f".then(r => r.json())"
-    )
+    expr = f"""
+        fetch({js_path}, {{credentials: 'include', headers: {js_headers}}}).then(async r => ({{
+            status: r.status,
+            ok: r.ok,
+            retryAfter: r.headers.get('retry-after'),
+            body: await r.json().catch(() => null),
+        }}))
+    """
     return _run_async_fetch(driver, expr)
 
 
-def _looks_like_error(data: dict, required_key: str) -> bool:
-    return not (isinstance(data, dict) and required_key in data)
-
-
 class ChatGPTSession:
-    """A driver + bearer token, refreshed automatically when it expires mid-export."""
+    """A driver + bearer token, resilient to token expiry and rate limiting mid-export."""
 
     def __init__(self, driver: WebDriver, token: Optional[str] = None):
         self.driver = driver
@@ -100,21 +111,46 @@ class ChatGPTSession:
             self.token = get_access_token(self.driver)
         return self.token
 
-    def _get(self, path: str, required_key: str, retry: bool = True) -> dict:
+    def _get(self, path: str, _auth_retried: bool = False, _rate_limit_attempt: int = 0) -> dict:
         token = self.ensure_token()
-        data = _fetch_json(self.driver, token, path)
-        if _looks_like_error(data, required_key):
-            detail = data.get("detail") if isinstance(data, dict) else data
-            if retry:
-                logger.warning(
-                    "Session token appears to have expired mid-export "
-                    "(response for %s was: %r) — refreshing and retrying once.",
-                    path, detail,
+        resp = _fetch_with_status(self.driver, token, path)
+        if resp.get("ok"):
+            return resp.get("body") or {}
+
+        status = resp.get("status")
+        body = resp.get("body")
+        detail = body.get("detail") if isinstance(body, dict) else body
+
+        if status in (401, 403) and not _auth_retried:
+            logger.warning(
+                "Auth error (HTTP %s) on %s — refreshing token and retrying once.", status, path
+            )
+            self.token = None
+            return self._get(path, _auth_retried=True, _rate_limit_attempt=_rate_limit_attempt)
+
+        if status == 429:
+            if _rate_limit_attempt >= RATE_LIMIT_MAX_RETRIES:
+                raise ApiError(
+                    f"{path} still rate-limited after {_rate_limit_attempt} retries: {detail!r}"
                 )
-                self.token = None
-                return self._get(path, required_key, retry=False)
-            raise ApiError(f"{path} failed after a token refresh: {detail!r}")
-        return data
+            retry_after = resp.get("retryAfter")
+            try:
+                wait = float(retry_after) if retry_after else None
+            except (TypeError, ValueError):
+                wait = None
+            if wait is None:
+                wait = RATE_LIMIT_BASE_DELAY_SECS * (2 ** _rate_limit_attempt)
+            wait = min(wait, RATE_LIMIT_MAX_DELAY_SECS)
+            logger.warning(
+                "Rate limited (HTTP 429) on %s — waiting %.0fs (attempt %d/%d).",
+                path, wait, _rate_limit_attempt + 1, RATE_LIMIT_MAX_RETRIES,
+            )
+            time.sleep(wait)
+            return self._get(
+                path, _auth_retried=_auth_retried, _rate_limit_attempt=_rate_limit_attempt + 1
+            )
+
+        raise ApiError(f"{path} failed with HTTP {status}: {detail!r}")
 
     def iter_conversations(
         self, page_size: int = 28, on_page: Optional[Callable[[int, int], None]] = None
@@ -127,7 +163,7 @@ class ChatGPTSession:
                 f"/backend-api/conversations?offset={offset}&limit={page_size}"
                 f"&order=updated&is_archived=false"
             )
-            data = self._get(path, "items")
+            data = self._get(path)
             items = data.get("items", [])
             total = data.get("total", total)
             if not items:
@@ -143,7 +179,7 @@ class ChatGPTSession:
 
     def get_conversation(self, conversation_id: str) -> dict:
         """Fetch the full node mapping + active branch pointer for one conversation."""
-        return self._get(f"/backend-api/conversation/{conversation_id}", "mapping")
+        return self._get(f"/backend-api/conversation/{conversation_id}")
 
 
 def throttle():

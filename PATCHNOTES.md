@@ -24,6 +24,17 @@ shapes that caused it, pulled live from chatgpt.com.
   auth-error-shaped response, transparently refreshes the token, and
   retries once; a failure that survives the retry is now surfaced in the
   log as a real error instead of being silently counted as a skip.
+- **Bulk export hit "too many requests" (HTTP 429) partway through a
+  1049-conversation account and had no recovery path.** The previous
+  retry logic only handled auth expiry (guessed from a missing `mapping`/
+  `items` key in the body) and had no concept of rate limiting at all.
+  Reworked to read the real HTTP status code instead of guessing from
+  response shape: a 401/403 still triggers one token-refresh-and-retry,
+  and a 429 now backs off (honouring `Retry-After` when the API sends
+  one, otherwise exponential backoff from 5s up to a 120s cap) and
+  retries up to 6 times before giving up with a real error. Also bumped
+  the base per-request delay slightly (0.4s -> 0.6s) to make hitting the
+  limit less likely in the first place.
 - **Every export failed with `argument must be int or float, not str`**,
   introduced by the same-day dated-filenames feature below. Root cause:
   `create_time`/`update_time` on items from `/backend-api/conversations`
