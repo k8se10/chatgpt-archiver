@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.spec
+.pytest_cache/
+
+# Local Chrome automation profile (created next to the exe at runtime; also
+# written to %LOCALAPPDATA%\ChatGPTArchiver when running from source)
+chrome-profile/
+
+# Default export destination if someone points it at the repo by mistake
+/ChatGPT Archive/
