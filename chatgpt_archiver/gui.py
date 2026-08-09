@@ -183,13 +183,10 @@ class ArchiverApp(tk.Tk):
         self.listbox.delete(0, "end")
         for conv in self._conversations:
             title = conv.get("title") or "Untitled conversation"
-            updated = conv.get("update_time")
             label = title
-            if updated:
-                try:
-                    label += f"   ({datetime.fromtimestamp(updated).strftime('%Y-%m-%d')})"
-                except Exception:
-                    pass
+            epoch = convert.coerce_timestamp(conv.get("update_time"))
+            if epoch is not None:
+                label += f"   ({datetime.fromtimestamp(epoch).strftime('%Y-%m-%d')})"
             self.listbox.insert("end", label)
 
     def _select_all(self):

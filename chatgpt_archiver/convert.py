@@ -71,10 +71,32 @@ def extract_visible_messages(conversation: dict) -> list:
     return messages
 
 
-def _format_timestamp(ts: Optional[float]) -> str:
-    if not ts:
+def coerce_timestamp(ts) -> Optional[float]:
+    """Normalize a timestamp to a unix epoch float.
+
+    ChatGPT's own API is inconsistent about this: per-message `create_time`
+    inside a conversation's node mapping is a numeric epoch, but
+    `create_time`/`update_time` on items from /backend-api/conversations are
+    ISO 8601 strings (e.g. "2026-08-09T19:19:09.712746Z"). Accept either.
+    """
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, str):
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            try:
+                return float(ts)
+            except ValueError:
+                return None
+    return None
+
+
+def _format_timestamp(ts) -> str:
+    epoch = coerce_timestamp(ts)
+    if epoch is None:
         return ""
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def to_markdown(title: str, conversation_id: str, messages: list) -> str:
@@ -94,16 +116,15 @@ def to_markdown(title: str, conversation_id: str, messages: list) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _format_filename_timestamp(ts: Optional[float]) -> str:
+def _format_filename_timestamp(ts) -> str:
     """Local-time date/time for filenames — colon-free so it's filesystem-safe."""
-    if not ts:
+    epoch = coerce_timestamp(ts)
+    if epoch is None:
         return ""
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H-%M")
+    return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H-%M")
 
 
-def safe_filename(
-    title: str, conversation_id: str, create_time: Optional[float] = None, max_len: int = 80
-) -> str:
+def safe_filename(title: str, conversation_id: str, create_time=None, max_len: int = 80) -> str:
     base = (title or "Untitled conversation").strip()
     base = _ILLEGAL_FILENAME_CHARS.sub(" ", base)
     base = re.sub(r"\s+", " ", base).strip().rstrip(".")
