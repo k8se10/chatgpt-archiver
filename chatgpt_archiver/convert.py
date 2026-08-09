@@ -137,12 +137,27 @@ def safe_filename(title: str, conversation_id: str, create_time=None, max_len: i
     return f"{ts} - {base}" if ts else base
 
 
-def unique_path(directory, base_name: str, suffix: str = ".md") -> Path:
-    """Return a Path under `directory` for `base_name`, disambiguated if it exists."""
+class OnConflict:
+    """What to do when the target filename already exists."""
+    RENAME = "rename"    # keep both: append " (2)", " (3)", ...
+    REPLACE = "replace"  # overwrite the existing file
+    SKIP = "skip"        # leave the existing file alone, don't write
+
+
+def resolve_output_path(directory, base_name: str, on_conflict: str = OnConflict.RENAME, suffix: str = ".md") -> Optional[Path]:
+    """Return the Path to write to under `directory` for `base_name`, applying
+    `on_conflict` if that name is already taken. Returns None only for SKIP
+    when the file already exists — the caller should leave it untouched."""
     directory = Path(directory)
     candidate = directory / f"{base_name}{suffix}"
     if not candidate.exists():
         return candidate
+
+    if on_conflict == OnConflict.REPLACE:
+        return candidate
+    if on_conflict == OnConflict.SKIP:
+        return None
+
     n = 2
     while True:
         candidate = directory / f"{base_name} ({n}){suffix}"

@@ -75,6 +75,23 @@ class ArchiverApp(tk.Tk):
         ttk.Entry(out_frame, textvariable=self.output_var).pack(side="left", fill="x", expand=True, padx=6)
         ttk.Button(out_frame, text="Browse…", command=self._browse_output).pack(side="left")
 
+        conflict_frame = ttk.Frame(self, padding=(10, 0))
+        conflict_frame.pack(fill="x")
+        ttk.Label(conflict_frame, text="If a file already exists:").pack(side="left")
+        self.conflict_var = tk.StringVar(value=convert.OnConflict.RENAME)
+        ttk.Radiobutton(
+            conflict_frame, text="Keep both (rename)", variable=self.conflict_var,
+            value=convert.OnConflict.RENAME,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Radiobutton(
+            conflict_frame, text="Replace it", variable=self.conflict_var,
+            value=convert.OnConflict.REPLACE,
+        ).pack(side="left", padx=6)
+        ttk.Radiobutton(
+            conflict_frame, text="Skip it", variable=self.conflict_var,
+            value=convert.OnConflict.SKIP,
+        ).pack(side="left")
+
         action_frame = ttk.Frame(self, padding=10)
         action_frame.pack(fill="x")
         self.export_btn = ttk.Button(
@@ -214,13 +231,17 @@ class ArchiverApp(tk.Tk):
         output_dir = Path(self.output_var.get())
         output_dir.mkdir(parents=True, exist_ok=True)
         selected = [self._conversations[i] for i in selection]
+        on_conflict = self.conflict_var.get()  # read on the UI thread, passed into the worker
         self.export_btn.configure(state="disabled")
-        threading.Thread(target=self._export_worker, args=(selected, output_dir), daemon=True).start()
+        threading.Thread(
+            target=self._export_worker, args=(selected, output_dir, on_conflict), daemon=True
+        ).start()
 
-    def _export_worker(self, selected, output_dir: Path):
+    def _export_worker(self, selected, output_dir: Path, on_conflict: str):
         total = len(selected)
         failures = 0
-        skipped = 0
+        empty = 0
+        already_existed = 0
         for i, conv in enumerate(selected, start=1):
             conv_id = conv["id"]
             title = conv.get("title") or "Untitled conversation"
@@ -231,11 +252,15 @@ class ArchiverApp(tk.Tk):
                 messages = convert.extract_visible_messages(full)
                 if not messages:
                     self._log("  Skipped (no visible messages).")
-                    skipped += 1
+                    empty += 1
                     continue
                 md = convert.to_markdown(title, conv_id, messages)
                 base_name = convert.safe_filename(title, conv_id, create_time=conv.get("create_time"))
-                path = convert.unique_path(output_dir, base_name)
+                path = convert.resolve_output_path(output_dir, base_name, on_conflict=on_conflict)
+                if path is None:
+                    self._log(f"  Skipped (already exists): {base_name}.md")
+                    already_existed += 1
+                    continue
                 path.write_text(md, encoding="utf-8")
                 self._log(f"  Saved: {path.name}")
             except Exception as e:
@@ -245,9 +270,12 @@ class ArchiverApp(tk.Tk):
             self.after(0, lambda i=i: self._set_progress(i, total, f"Exporting {i}/{total}"))
             api.throttle()
 
+        skipped = empty + already_existed
         summary = f"Done. Exported to {output_dir}"
-        if skipped:
-            summary += f" ({skipped} skipped — no visible messages)"
+        if empty:
+            summary += f" ({empty} skipped — no visible messages)"
+        if already_existed:
+            summary += f" ({already_existed} skipped — already existed)"
         if failures:
             summary += f" ({failures} failed — see log)"
         self._log(summary)

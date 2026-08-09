@@ -56,6 +56,13 @@ shapes that caused it, pulled live from chatgpt.com.
   actually visible while it's happening.
 
 ### Added
+- **File-conflict handling.** A new "If a file already exists:" control
+  next to the output folder lets you choose what happens when an export
+  would overwrite an existing `.md` file: keep both (rename with a
+  `(2)`/`(3)` suffix — the previous, only, behavior), replace it, or skip
+  it and leave the existing file untouched. Useful for re-running an
+  export over an existing archive without duplicating everything.
+
 - **Progress bar + incremental log lines while listing conversations.**
   Listing a 1000+ conversation account previously gave zero feedback for
   the entire ~38-page fetch; it now logs and updates a progress bar every
