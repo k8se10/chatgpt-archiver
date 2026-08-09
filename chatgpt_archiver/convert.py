@@ -94,7 +94,16 @@ def to_markdown(title: str, conversation_id: str, messages: list) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def safe_filename(title: str, conversation_id: str, max_len: int = 80) -> str:
+def _format_filename_timestamp(ts: Optional[float]) -> str:
+    """Local-time date/time for filenames — colon-free so it's filesystem-safe."""
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H-%M")
+
+
+def safe_filename(
+    title: str, conversation_id: str, create_time: Optional[float] = None, max_len: int = 80
+) -> str:
     base = (title or "Untitled conversation").strip()
     base = _ILLEGAL_FILENAME_CHARS.sub(" ", base)
     base = re.sub(r"\s+", " ", base).strip().rstrip(".")
@@ -102,7 +111,9 @@ def safe_filename(title: str, conversation_id: str, max_len: int = 80) -> str:
         base = "Untitled conversation"
     if len(base) > max_len:
         base = base[:max_len].rstrip()
-    return base
+
+    ts = _format_filename_timestamp(create_time)
+    return f"{ts} - {base}" if ts else base
 
 
 def unique_path(directory, base_name: str, suffix: str = ".md") -> Path:

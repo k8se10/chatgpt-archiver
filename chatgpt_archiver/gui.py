@@ -25,12 +25,12 @@ class ArchiverApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("ChatGPT Archiver")
-        self.geometry("640x560")
-        self.minsize(520, 440)
+        self.geometry("640x580")
+        self.minsize(520, 460)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._driver = None
-        self._token = None
+        self._session: api.ChatGPTSession | None = None
         self._conversations = []  # list of dicts from the API
         self._log_queue = queue.Queue()
 
@@ -82,12 +82,19 @@ class ArchiverApp(tk.Tk):
         )
         self.export_btn.pack(side="left")
 
+        progress_frame = ttk.Frame(self, padding=(10, 0, 10, 5))
+        progress_frame.pack(fill="x")
+        self.progress = ttk.Progressbar(progress_frame, mode="determinate")
+        self.progress.pack(fill="x")
+        self.progress_label = ttk.Label(progress_frame, text="")
+        self.progress_label.pack(anchor="w")
+
         log_frame = ttk.Frame(self, padding=(10, 0, 10, 10))
         log_frame.pack(fill="both", expand=False)
         self.log_text = tk.Text(log_frame, height=8, state="disabled", wrap="word")
         self.log_text.pack(fill="both", expand=True)
 
-    # ── Logging helper (thread-safe: workers push, UI thread drains) ──────
+    # ── Logging / progress helpers (thread-safe: workers push, UI thread drains) ──
 
     def _log(self, message: str):
         self._log_queue.put(message)
@@ -104,6 +111,10 @@ class ArchiverApp(tk.Tk):
             pass
         self.after(150, self._drain_log_queue)
 
+    def _set_progress(self, done: int, total: int, label: str = ""):
+        self.progress.configure(maximum=max(total, 1), value=done)
+        self.progress_label.configure(text=label or (f"{done}/{total}" if total else ""))
+
     # ── Connect / login flow ────────────────────────────────────────────
 
     def _on_connect(self):
@@ -115,17 +126,18 @@ class ArchiverApp(tk.Tk):
         try:
             if self._driver is None:
                 self._driver = browser.create_driver()
+                self._session = api.ChatGPTSession(self._driver)
             api.ensure_on_chatgpt(self._driver)
-            self._try_get_token(after_login_click=False)
+            self._try_get_token()
         except Exception as e:
             logger.exception("Connect failed")
             self._log(f"Unexpected error: {e}")
             self.after(0, lambda: messagebox.showerror("Error", str(e)))
             self.after(0, lambda: self.connect_btn.configure(state="normal"))
 
-    def _try_get_token(self, after_login_click: bool):
+    def _try_get_token(self):
         try:
-            self._token = api.get_access_token(self._driver)
+            self._session.token = api.get_access_token(self._driver)
         except api.AuthError:
             self._log("Not logged in yet. Log into ChatGPT in the Chrome window that opened, "
                        "then click \"I've logged in\".")
@@ -140,12 +152,18 @@ class ArchiverApp(tk.Tk):
 
     def _on_confirm_login(self):
         self.login_btn.configure(state="disabled")
-        threading.Thread(target=lambda: self._try_get_token(after_login_click=True), daemon=True).start()
+        threading.Thread(target=self._try_get_token, daemon=True).start()
 
     def _load_conversations(self):
         self._log("Fetching conversation list…")
+        self.after(0, lambda: self._set_progress(0, 1, "Listing conversations…"))
+
+        def on_page(done, total):
+            self._log(f"  …{done}/{total} conversations listed")
+            self.after(0, lambda: self._set_progress(done, total, f"Listing: {done}/{total}"))
+
         try:
-            convs = list(api.iter_conversations(self._driver, self._token))
+            convs = list(self._session.iter_conversations(on_page=on_page))
         except Exception as e:
             logger.exception("Failed to list conversations")
             self._log(f"Failed to list conversations: {e}")
@@ -156,6 +174,7 @@ class ArchiverApp(tk.Tk):
         self._conversations = convs
         self._log(f"Found {len(convs)} conversations.")
         self.after(0, self._populate_list)
+        self.after(0, lambda: self._set_progress(0, 1, ""))
         self.after(0, lambda: self.status_label.configure(text=f"Connected — {len(convs)} conversations"))
         self.after(0, lambda: self.export_btn.configure(state="normal"))
         self.after(0, lambda: self.connect_btn.configure(state="normal"))
@@ -196,32 +215,46 @@ class ArchiverApp(tk.Tk):
 
     def _export_worker(self, selected, output_dir: Path):
         total = len(selected)
+        failures = 0
+        skipped = 0
         for i, conv in enumerate(selected, start=1):
             conv_id = conv["id"]
             title = conv.get("title") or "Untitled conversation"
             self._log(f"[{i}/{total}] Exporting: {title}")
+            self.after(0, lambda i=i: self._set_progress(i - 1, total, f"Exporting {i}/{total}"))
             try:
-                full = api.get_conversation(self._driver, self._token, conv_id)
+                full = self._session.get_conversation(conv_id)
                 messages = convert.extract_visible_messages(full)
                 if not messages:
                     self._log("  Skipped (no visible messages).")
+                    skipped += 1
                     continue
                 md = convert.to_markdown(title, conv_id, messages)
-                base_name = convert.safe_filename(title, conv_id)
+                base_name = convert.safe_filename(title, conv_id, create_time=conv.get("create_time"))
                 path = convert.unique_path(output_dir, base_name)
                 path.write_text(md, encoding="utf-8")
                 self._log(f"  Saved: {path.name}")
             except Exception as e:
                 logger.exception("Export failed for %s", conv_id)
                 self._log(f"  Failed: {e}")
+                failures += 1
+            self.after(0, lambda i=i: self._set_progress(i, total, f"Exporting {i}/{total}"))
             api.throttle()
 
-        self._log(f"Done. Exported to {output_dir}")
+        summary = f"Done. Exported to {output_dir}"
+        if skipped:
+            summary += f" ({skipped} skipped — no visible messages)"
+        if failures:
+            summary += f" ({failures} failed — see log)"
+        self._log(summary)
         self.after(0, lambda: self.export_btn.configure(state="normal"))
+        self.after(0, lambda: self._set_progress(0, 1, ""))
         self.after(
             0,
             lambda: messagebox.showinfo(
-                "Export complete", f"Exported {total} conversation(s) to:\n{output_dir}"
+                "Export complete",
+                f"Exported {total - skipped - failures}/{total} conversation(s) to:\n{output_dir}"
+                + (f"\n\n{skipped} skipped, {failures} failed — see the log." if (skipped or failures) else ""),
             ),
         )
 

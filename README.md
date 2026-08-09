@@ -69,6 +69,16 @@ Select the conversations you want, pick an output folder, and hit
   `*[unsupported attachment]*` placeholder, not the actual file — the API
   returns a pointer, not the binary.
 - Only exports conversations, not Projects/custom GPT metadata.
+- **Large accounts are slow.** Every conversation is a separate authenticated
+  request through the browser, throttled to stay polite to the API — a
+  library of ~1000 conversations takes a while to both list and export.
+  There's a progress bar and a running log so it's clear the app hasn't
+  hung, but there's no fast path yet. If you only need a handful of
+  conversations, select just those instead of "Select All".
+
+## Changelog
+
+See [PATCHNOTES.md](PATCHNOTES.md) for what's changed release to release.
 
 ## Contributing
 
