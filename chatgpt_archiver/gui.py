@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import api, browser, convert
+from . import api, browser, bulk_import, convert
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,9 @@ class ArchiverApp(tk.Tk):
 
         self._driver = None
         self._session: api.ChatGPTSession | None = None
-        self._conversations = []  # list of dicts from the API
+        self._conversations = []  # summary dicts: id/title/create_time/update_time
+        self._source = None  # "live" (browser session) or "file" (bulk export)
+        self._bulk_conversations = {}  # id -> full conversation dict, "file" source only
         self._log_queue = queue.Queue()
 
         self._build_widgets()
@@ -49,8 +51,22 @@ class ArchiverApp(tk.Tk):
         self.login_btn = ttk.Button(top, text="I've logged in", command=self._on_confirm_login, state="disabled")
         self.login_btn.pack(side="left", padx=6)
 
+        self.import_btn = ttk.Button(top, text="Import Export File…", command=self._on_import_file)
+        self.import_btn.pack(side="left", padx=6)
+
         self.status_label = ttk.Label(top, text="Not connected")
         self.status_label.pack(side="left", padx=10)
+
+        hint_frame = ttk.Frame(self, padding=(10, 0))
+        hint_frame.pack(fill="x")
+        ttk.Label(
+            hint_frame,
+            text=(
+                "Large account? ChatGPT's own bulk export avoids rate limits entirely: "
+                "Settings → Data controls → Export data, then import the .zip it emails you here."
+            ),
+            foreground="#666666",
+        ).pack(side="left")
 
         list_frame = ttk.Frame(self, padding=(10, 0))
         list_frame.pack(fill="both", expand=True)
@@ -148,6 +164,14 @@ class ArchiverApp(tk.Tk):
 
     def _connect_worker(self):
         try:
+            if self._driver is not None and not browser.is_alive(self._driver):
+                self._log("The Chrome window was closed — relaunching it.")
+                try:
+                    self._driver.quit()
+                except Exception:
+                    pass
+                self._driver = None
+                self._session = None
             if self._driver is None:
                 self._driver = browser.create_driver()
                 self._session = api.ChatGPTSession(self._driver, on_wait=self._on_wait)
@@ -196,6 +220,7 @@ class ArchiverApp(tk.Tk):
             return
 
         self._conversations = convs
+        self._source = "live"
         self._log(f"Found {len(convs)} conversations.")
         self.after(0, self._populate_list)
         self.after(0, lambda: self._set_progress(0, 1, ""))
@@ -215,6 +240,52 @@ class ArchiverApp(tk.Tk):
 
     def _select_all(self):
         self.listbox.selection_set(0, "end")
+
+    # ── Bulk import (no live requests, no rate limits) ──────────────────
+
+    def _on_import_file(self):
+        path = filedialog.askopenfilename(
+            title="Select a ChatGPT data export",
+            filetypes=[("ChatGPT export", "*.zip *.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        self.import_btn.configure(state="disabled")
+        self.connect_btn.configure(state="disabled")
+        threading.Thread(target=self._import_worker, args=(Path(path),), daemon=True).start()
+
+    def _import_worker(self, path: Path):
+        self._log(f"Reading export file: {path.name}")
+        try:
+            raw = list(bulk_import.iter_conversations(path))
+        except Exception as e:
+            logger.exception("Failed to read export file")
+            self._log(f"Failed to read export file: {e}")
+            self.after(0, lambda: messagebox.showerror("Import failed", str(e)))
+            self.after(0, lambda: self.import_btn.configure(state="normal"))
+            self.after(0, lambda: self.connect_btn.configure(state="normal"))
+            return
+
+        self._bulk_conversations = {}
+        summaries = []
+        for c in raw:
+            cid = c.get("id") or c.get("conversation_id")
+            self._bulk_conversations[cid] = c
+            summaries.append({
+                "id": cid,
+                "title": c.get("title"),
+                "create_time": c.get("create_time"),
+                "update_time": c.get("update_time"),
+            })
+
+        self._conversations = summaries
+        self._source = "file"
+        self._log(f"Loaded {len(summaries)} conversations from {path.name} — no API calls made.")
+        self.after(0, self._populate_list)
+        self.after(0, lambda: self.status_label.configure(text=f"Loaded from file — {len(summaries)} conversations"))
+        self.after(0, lambda: self.export_btn.configure(state="normal"))
+        self.after(0, lambda: self.import_btn.configure(state="normal"))
+        self.after(0, lambda: self.connect_btn.configure(state="normal"))
 
     def _browse_output(self):
         chosen = filedialog.askdirectory(initialdir=self.output_var.get() or str(Path.home()))
@@ -237,30 +308,70 @@ class ArchiverApp(tk.Tk):
             target=self._export_worker, args=(selected, output_dir, on_conflict), daemon=True
         ).start()
 
+    def _fetch_full_conversation(self, conv_id: str) -> dict:
+        """Returns the full node-mapping dict for one conversation, from whichever
+        source is active. Raises browser.ChromeClosedError specifically when the
+        live source's browser window is gone, so the caller can stop cleanly
+        instead of failing every remaining item one at a time."""
+        if self._source == "file":
+            full = self._bulk_conversations.get(conv_id)
+            if full is None:
+                raise KeyError(f"{conv_id} not found in the loaded export file")
+            return full
+        if not browser.is_alive(self._driver):
+            raise browser.ChromeClosedError("Chrome window was closed")
+        return self._session.get_conversation(conv_id)
+
     def _export_worker(self, selected, output_dir: Path, on_conflict: str):
         total = len(selected)
         failures = 0
         empty = 0
         already_existed = 0
+        stopped_early = False
         for i, conv in enumerate(selected, start=1):
             conv_id = conv["id"]
             title = conv.get("title") or "Untitled conversation"
-            self._log(f"[{i}/{total}] Exporting: {title}")
             self.after(0, lambda i=i: self._set_progress(i - 1, total, f"Exporting {i}/{total}"))
+
+            # Resolve the output path BEFORE touching the network — for
+            # "Skip it" this is the whole point (resuming a large export
+            # shouldn't re-fetch conversations you already have), and it's
+            # a cheap local check regardless of policy.
+            base_name = convert.safe_filename(title, conv_id, create_time=conv.get("create_time"))
+            path = convert.resolve_output_path(output_dir, base_name, on_conflict=on_conflict)
+            if path is None:
+                self._log(f"[{i}/{total}] Skipped (already exists, no API call made): {base_name}.md")
+                already_existed += 1
+                self.after(0, lambda i=i: self._set_progress(i, total, f"Exporting {i}/{total}"))
+                continue
+
+            self._log(f"[{i}/{total}] Exporting: {title}")
             try:
-                full = self._session.get_conversation(conv_id)
+                full = self._fetch_full_conversation(conv_id)
+            except browser.ChromeClosedError:
+                self._log(
+                    "  The Chrome window was closed — stopping here. Reconnect and export "
+                    "again to pick up where this left off (use \"Skip it\" to avoid "
+                    "re-fetching what already succeeded)."
+                )
+                stopped_early = True
+                break
+            except Exception as e:
+                logger.exception("Export failed for %s", conv_id)
+                self._log(f"  Failed: {e}")
+                failures += 1
+                self.after(0, lambda i=i: self._set_progress(i, total, f"Exporting {i}/{total}"))
+                if self._source == "live":
+                    api.throttle()
+                continue
+
+            try:
                 messages = convert.extract_visible_messages(full)
                 if not messages:
                     self._log("  Skipped (no visible messages).")
                     empty += 1
                     continue
                 md = convert.to_markdown(title, conv_id, messages)
-                base_name = convert.safe_filename(title, conv_id, create_time=conv.get("create_time"))
-                path = convert.resolve_output_path(output_dir, base_name, on_conflict=on_conflict)
-                if path is None:
-                    self._log(f"  Skipped (already exists): {base_name}.md")
-                    already_existed += 1
-                    continue
                 path.write_text(md, encoding="utf-8")
                 self._log(f"  Saved: {path.name}")
             except Exception as e:
@@ -268,10 +379,12 @@ class ArchiverApp(tk.Tk):
                 self._log(f"  Failed: {e}")
                 failures += 1
             self.after(0, lambda i=i: self._set_progress(i, total, f"Exporting {i}/{total}"))
-            api.throttle()
+            if self._source == "live":
+                api.throttle()
 
         skipped = empty + already_existed
-        summary = f"Done. Exported to {output_dir}"
+        summary = "Stopped early (Chrome closed)." if stopped_early else "Done."
+        summary += f" Exported to {output_dir}"
         if empty:
             summary += f" ({empty} skipped — no visible messages)"
         if already_existed:
@@ -284,9 +397,12 @@ class ArchiverApp(tk.Tk):
         self.after(
             0,
             lambda: messagebox.showinfo(
-                "Export complete",
+                "Export stopped early" if stopped_early else "Export complete",
                 f"Exported {total - skipped - failures}/{total} conversation(s) to:\n{output_dir}"
-                + (f"\n\n{skipped} skipped, {failures} failed — see the log." if (skipped or failures) else ""),
+                + (f"\n\n{skipped} skipped, {failures} failed — see the log." if (skipped or failures) else "")
+                + ("\n\nChrome was closed partway through. Reconnect and export the "
+                   "remaining conversations again — use \"Skip it\" to avoid re-fetching "
+                   "what already succeeded." if stopped_early else ""),
             ),
         )
 

@@ -55,7 +55,43 @@ shapes that caused it, pulled live from chatgpt.com.
   label, so "Rate limited by ChatGPT — waiting 10s… (attempt 2/6)" is
   actually visible while it's happening.
 
+### Fixed
+- **Reconnecting after closing the Chrome window errored instead of
+  relaunching.** `self._driver` kept referencing the dead Selenium session
+  after the user closed the automated Chrome window, so clicking "Launch
+  Chrome & Connect" again tried to use a browser that no longer existed.
+  Added `browser.is_alive()` (a cheap liveness probe, verified live: True
+  before quitting the driver, False after, without raising) and the
+  connect flow now detects a dead driver and relaunches a fresh one
+  instead of erroring.
+- **"Skip it" (file-conflict handling) still fetched the full conversation
+  over the network before checking whether it needed to.** For a large
+  account this defeated the point of skipping -- resuming an export after
+  hitting a rate limit re-spent exactly the API calls "Skip it" was meant
+  to avoid. The output path is now resolved from the local filesystem
+  *before* any network call, so a skip is a pure local check with zero
+  API cost. The export loop also now checks Chrome is still alive before
+  each conversation and stops cleanly (instead of failing every remaining
+  item one by one) if the window was closed mid-export.
+
 ### Added
+- **Import from ChatGPT's own bulk data export — the real fix for rate
+  limits on large accounts, not a workaround.** The live path makes one
+  request per conversation and will always eventually hit ChatGPT's rate
+  limits on a large enough account; there's no way to "sidestep" that
+  while still making per-conversation live requests, since the limiting
+  is on OpenAI's side. Instead, a new **Import Export File…** button
+  reads `conversations.json` out of the `.zip` OpenAI's own Settings →
+  Data controls → Export data feature emails you — confirmed (via
+  independent write-ups of the format, cross-referenced since we can't
+  request-and-wait for a real export inside this session) to be the same
+  tree schema the live API returns. It flows through the exact same
+  `extract_visible_messages`/`to_markdown` pipeline unchanged (verified
+  by a unit test), so behavior is identical to the live path — just zero
+  network requests, and therefore zero rate limiting, for the whole
+  archive. New `bulk_import.py` module; the live path is unchanged and
+  still useful for exporting a handful of recent conversations without
+  waiting for OpenAI's export email.
 - **File-conflict handling.** A new "If a file already exists:" control
   next to the output folder lets you choose what happens when an export
   would overwrite an existing `.md` file: keep both (rename with a

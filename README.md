@@ -26,6 +26,24 @@ writes it out as clean Markdown.
    `## ChatGPT` heading per turn, original Markdown formatting (code blocks,
    lists, etc.) preserved exactly as authored, no lossy HTML round-trip.
 
+## Large accounts: use ChatGPT's own bulk export instead
+
+The live path above makes one request per conversation, which is fine for
+a handful of chats but will eventually hit ChatGPT's rate limits on an
+account with hundreds or thousands of them (the app backs off and
+retries automatically, but there's a real wall-clock cost — see Known
+Limitations).
+
+For a full archive, sidestep that entirely: in chatgpt.com, go to
+**Settings → Data controls → Export data**. OpenAI emails you a `.zip`
+(can take minutes to hours to generate) containing `conversations.json` —
+every conversation you have, in the same format the live API returns,
+generated once, server-side, with zero requests from this app. Click
+**Import Export File…** in the app and pick that `.zip` (or the
+`conversations.json` inside it) — same conversation list, same selection
+UI, same Markdown output, but reading a local file instead of making any
+network requests at all.
+
 ## Requirements
 
 - Windows, with Google Chrome installed
@@ -75,17 +93,20 @@ Select the conversations you want, pick an output folder, and hit
   There's a progress bar and a running log so it's clear the app hasn't
   hung, but there's no fast path yet. If you only need a handful of
   conversations, select just those instead of "Select All".
-- **Rate limiting on large archivals is a permanent external constraint,
-  not a bug this app can fix.** `/backend-api/*` is ChatGPT's own
-  internal endpoint, not a public API with published quotas — for a
-  library in the hundreds/thousands, hitting HTTP 429 partway through is
-  expected, not exceptional. The app backs off and retries automatically
-  (see `ChatGPTSession` in `api.py`), which gets a full export through
-  eventually, but "eventually" can mean a genuinely long wall-clock time
-  for very large accounts, and that ceiling is set by OpenAI's rate
-  limits, not by anything tunable here. If a run gets interrupted, rerun
-  it with **Skip it** selected under file-conflict handling to resume
-  without re-exporting what already succeeded.
+- **Rate limiting on large archivals via the live path is a permanent
+  external constraint, not a bug this app can fix.** `/backend-api/*` is
+  ChatGPT's own internal endpoint, not a public API with published
+  quotas — for a library in the hundreds/thousands, hitting HTTP 429
+  partway through is expected, not exceptional. The app backs off and
+  retries automatically (see `ChatGPTSession` in `api.py`), which gets a
+  full export through eventually, but "eventually" can mean a genuinely
+  long wall-clock time for very large accounts, and that ceiling is set
+  by OpenAI's rate limits, not by anything tunable here. Two ways around
+  it: use **Import Export File…** instead (see above — zero live
+  requests, so no rate limit to hit at all), or if you do run the live
+  path and it gets interrupted, rerun it with **Skip it** selected under
+  file-conflict handling to resume without re-fetching what already
+  succeeded.
 
 ## Changelog
 

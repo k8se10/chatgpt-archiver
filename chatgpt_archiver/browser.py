@@ -20,6 +20,10 @@ from webdriver_manager.chrome import ChromeDriverManager
 logger = logging.getLogger(__name__)
 
 
+class ChromeClosedError(RuntimeError):
+    """Raised when an operation needs the automated Chrome window and it's gone."""
+
+
 def profile_dir() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "ChatGPTArchiver" / "chrome-profile"
     base.mkdir(parents=True, exist_ok=True)
@@ -43,3 +47,17 @@ def create_driver(headless: bool = False) -> webdriver.Chrome:
     driver.set_script_timeout(30)
     logger.info("Chrome launched (profile=%s)", profile_dir())
     return driver
+
+
+def is_alive(driver: Optional[webdriver.Chrome]) -> bool:
+    """Best-effort liveness probe. Selenium keeps a driver object usable-looking
+    even after its browser window/process is gone (closed by the user, crashed,
+    etc.) — any call into it just raises. Touching a cheap property is the
+    standard way to find out before actually trying to do something with it."""
+    if driver is None:
+        return False
+    try:
+        _ = driver.title
+        return True
+    except Exception:
+        return False
