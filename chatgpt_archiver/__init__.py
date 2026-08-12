@@ -5,4 +5,4 @@ calls the same backend API the ChatGPT web app itself uses, so exports get
 the original markdown source instead of a lossy copy-paste of rendered HTML.
 """
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"

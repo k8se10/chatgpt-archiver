@@ -27,14 +27,28 @@ clearly instead of failing silently.
    the browser's own authenticated `fetch()`. Nothing is decrypted, no
    cookie files are read off disk — it's just the browser making requests it
    already has permission to make.
-3. Each conversation comes back as a full tree of every edit/regeneration
+3. **Smart Scan** (the default) fetches just your ~150 most-recently-updated
+   conversations and checks each against what's already in your output
+   folder. If most already match, it infers the rest of your (older)
+   history is archived too and skips listing it — this is what actually
+   avoids hundreds of API calls on a large account, not just avoiding
+   re-fetching content. **Full Scan** lists your entire account instead, if
+   you want to check everything explicitly.
+4. Each conversation comes back as a full tree of every edit/regeneration
    branch. The tool walks the single path that's actually shown on screen
    (from `current_node` back to the root) and drops anything that never
    renders — system prompts, tool calls, hidden reasoning/thinking-channel
    messages — so the export matches what you'd see in the UI.
-4. The result is written as one `.md` file per conversation: a `## You` /
+5. The result is written as one `.md` file per conversation: a `## You` /
    `## ChatGPT` heading per turn, original Markdown formatting (code blocks,
-   lists, etc.) preserved exactly as authored, no lossy HTML round-trip.
+   lists, etc.) preserved exactly as authored, no lossy HTML round-trip. An
+   invisible marker at the top records the conversation's `id` and
+   `update_time`, so a later scan can tell whether it's changed since —
+   changed/new conversations show up color-coded (yellow = recently,
+   red = longer ago) in the list, with a **Select Outdated** button to
+   grab all of them in one click. **Skip it** (the default conflict
+   policy) means "skip it unless it's changed" — a stale file gets
+   refreshed, not silently left behind.
 
 ## Large accounts: use ChatGPT's own bulk export instead
 
@@ -46,14 +60,19 @@ Limitations).
 
 For a full archive, sidestep that entirely: in chatgpt.com, go to
 **Settings → Data controls → Export data**. OpenAI emails you a `.zip`
-(can take minutes to hours to generate) containing every conversation you
-have — as one or more `conversations*.json` files (OpenAI shards this
-across several files, e.g. `conversations-000.json`, `conversations-001.json`,
-… for any non-trivial account) — in the same format the live API returns,
-generated once, server-side, with zero requests from this app. Click
+containing every conversation you have — as one or more
+`conversations*.json` files (OpenAI shards this across several files,
+e.g. `conversations-000.json`, `conversations-001.json`, … for any
+non-trivial account) — in the same format the live API returns. Click
 **Import Export File…** in the app and pick that `.zip` — same
 conversation list, same selection UI, same Markdown output, but reading
-a local file instead of making any network requests at all.
+a local file instead of making any network requests at all, so it's
+effectively instant once the file exists.
+
+The only catch: generating that `.zip` is **not instant on OpenAI's
+side** — it's a background job and the email can take a few days to
+arrive, not minutes. Worth requesting it well ahead of when you actually
+need the archive.
 
 ## Requirements
 
@@ -70,8 +89,10 @@ python -m venv .venv
 
 Click **Launch Chrome & Connect**. If it's your first run, a Chrome window
 opens to chatgpt.com — log in, then click **I've logged in** back in the app.
-Select the conversations you want, pick an output folder, and hit
-**Export Selected**.
+Click **Smart Scan** (or **Full Scan** to check your entire account),
+select the conversations you want (or **Select Outdated** to grab
+everything new/changed), pick an output folder, and hit **Export
+Selected**.
 
 ## Building the standalone .exe
 
@@ -98,12 +119,16 @@ Select the conversations you want, pick an output folder, and hit
   `*[unsupported attachment]*` placeholder, not the actual file — the API
   returns a pointer, not the binary.
 - Only exports conversations, not Projects/custom GPT metadata.
-- **Large accounts are slow.** Every conversation is a separate authenticated
-  request through the browser, throttled to stay polite to the API — a
-  library of ~1000 conversations takes a while to both list and export.
-  There's a progress bar and a running log so it's clear the app hasn't
-  hung, but there's no fast path yet. If you only need a handful of
-  conversations, select just those instead of "Select All".
+- **Large accounts are slow — Smart Scan and "Skip it" both help, but
+  don't eliminate this.** Every conversation still exported is a separate
+  authenticated request through the browser, throttled to stay polite to
+  the API. Smart Scan avoids *listing* most of a large, already-archived
+  account, and "Skip it" avoids re-fetching content you already have —
+  but the first time you archive a large account (or a Smart Scan that
+  falls back to Full Scan), you're still looking at one request per
+  conversation. There's a progress bar and a running log so it's clear
+  the app hasn't hung, but there's no way around the wall-clock cost of
+  that first full pass other than Import Export File… (see above).
 - **Rate limiting on large archivals via the live path is a permanent
   external constraint, not a bug this app can fix.** `/backend-api/*` is
   ChatGPT's own internal endpoint, not a public API with published

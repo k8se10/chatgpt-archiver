@@ -16,7 +16,7 @@ against that same real export.
 Reading it means zero live requests and zero rate limiting for a full
 archive -- the right tool for a large account, at the cost of the export
 not being instantaneous (OpenAI generates it in the background and emails
-a download link, which can take anywhere from minutes to hours).
+a download link, which can take a few days, not minutes).
 """
 
 import json

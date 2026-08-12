@@ -6,6 +6,54 @@ All notable changes to the project, per release.
 
 ## Unreleased
 
+## v0.3.0 (2026-08-12) — Smart Scan + update detection
+
+**Honesty note**: the staleness-detection logic (`local_export_status`) is
+verified by unit tests covering missing/current/stale/legacy-file cases,
+and the filename-matching side of Smart Scan is verified against a real
+account (150 live conversations checked against 1052 real, previously
+exported files — 147 matched, and the 3 that didn't were genuinely new
+conversations, zero false positives). What's *not* yet verified live: the
+STALE path specifically (re-exporting a conversation that changed since
+last archived), since none of the 1052 real files on hand predate this
+feature. Logically sound and unit-tested, but flagging it as the one path
+without a real-world confirmation yet.
+
+### Added
+- **Smart Scan**, a new default listing mode. Instead of paginating
+  through your entire account (the only option before — "Full Scan",
+  still available), it fetches just your ~150 most-recently-updated
+  conversations, checks each against what's already in your output
+  folder, and — if most of them already match — infers the rest of your
+  (older) history is archived too and skips listing it at all. Falls back
+  to a Full Scan automatically if the match rate is low (first run, or a
+  different output folder). This is what actually cuts the hundreds of
+  API calls: not just avoiding re-fetching content (Skip it, already
+  fixed last release) but avoiding *listing* most of a large account in
+  the first place.
+- **Update detection.** Every exported `.md` now carries an invisible
+  marker (an HTML comment, renders as nothing) recording the source
+  conversation's `id` and `update_time`. Future scans read it back and
+  compare against the live `update_time` to tell whether the conversation
+  has changed since — not just "does a same-named file exist" like
+  before. This makes **Skip it** actually mean "skip it *unless it's
+  changed*": a stale file now gets refreshed instead of silently left
+  behind. Files from before this feature (no marker) are treated as
+  "assume current" rather than forced to re-export.
+- **Outdated conversations are shown in the list, color-coded.** Yellow
+  for changed recently (≤3 days), red for longer ago; a new **Select
+  Outdated** button (next to Select All / Select None) selects everything
+  that's either new or stale in one click.
+- Export summary and per-item log lines now distinguish "Updated (was N
+  days out of date)" from a fresh "Saved" and from "Skipped (up to
+  date)".
+
+### Docs
+- **Corrected how long OpenAI's own data export takes to arrive.**
+  Previously said "minutes to hours" — in practice it can take a few
+  days, not minutes. Fixed in the README, the in-app hint, and
+  `bulk_import.py`'s module docstring.
+
 ## v0.2.1 (2026-08-12) — Bulk import didn't actually work
 
 **Honesty note**: v0.2.0's bulk-import format assumptions were "confirmed"

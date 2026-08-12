@@ -17,6 +17,7 @@ from typing import Optional
 _VISIBLE_CHANNELS = (None, "final")
 _VISIBLE_ROLES = ("user", "assistant")
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_METADATA_RE = re.compile(r"^<!--\s*chatgpt-archiver:\s*id=(\S+)\s+update_time=(\S+)\s*-->\s*$")
 
 
 def _active_path(mapping: dict, current_node: Optional[str]) -> list:
@@ -99,8 +100,38 @@ def _format_timestamp(ts) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def to_markdown(title: str, conversation_id: str, messages: list) -> str:
-    lines = [f"# {title or 'Untitled conversation'}", ""]
+def _metadata_comment(conversation_id: str, update_time) -> str:
+    """An invisible marker (renders as nothing in any Markdown viewer) recording
+    what this export corresponds to, so a later run can tell whether the source
+    conversation has changed since — see local_export_status()."""
+    epoch = coerce_timestamp(update_time)
+    epoch_str = f"{epoch:.6f}" if epoch is not None else "unknown"
+    return f"<!-- chatgpt-archiver: id={conversation_id} update_time={epoch_str} -->"
+
+
+def read_exported_metadata(path) -> Optional[dict]:
+    """Read back {id, update_time} from a previously-exported .md file's
+    marker line, if present. None for files with no marker (exported by an
+    older version, or not one of ours) — callers should treat that as
+    "can't tell, assume it's fine" rather than forcing a re-export."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            first_line = f.readline()
+    except OSError:
+        return None
+    m = _METADATA_RE.match(first_line.strip())
+    if not m:
+        return None
+    conv_id, update_time_str = m.groups()
+    try:
+        update_time = float(update_time_str)
+    except ValueError:
+        update_time = None
+    return {"id": conv_id, "update_time": update_time}
+
+
+def to_markdown(title: str, conversation_id: str, messages: list, update_time=None) -> str:
+    lines = [_metadata_comment(conversation_id, update_time), f"# {title or 'Untitled conversation'}", ""]
     lines.append(f"*Exported from [chatgpt.com/c/{conversation_id}](https://chatgpt.com/c/{conversation_id})*")
     lines.append("")
 
@@ -137,17 +168,57 @@ def safe_filename(title: str, conversation_id: str, create_time=None, max_len: i
     return f"{ts} - {base}" if ts else base
 
 
+class ExportStatus:
+    """Where a conversation's on-disk export stands relative to the live version."""
+    MISSING = "missing"  # never exported (or no exact filename match)
+    STALE = "stale"      # exported, but the conversation changed since
+    CURRENT = "current"  # exported and (as far as we can tell) still up to date
+
+
+def local_export_status(directory, base_name: str, live_update_time, suffix: str = ".md"):
+    """Returns (status, stale_days). stale_days is a float (>= 0) only when
+    status == STALE — how long ago the conversation changed relative to
+    when it was last exported — and None otherwise. Used by both Smart Scan
+    (does this look already archived?) and "Skip it" (should this stale copy
+    actually get refreshed instead of left alone?).
+
+    A file with no embedded metadata (exported by an older version of this
+    tool, or not one of ours) or a live_update_time we can't parse is
+    reported CURRENT — we'd rather under-flag than force surprise
+    re-exports of an existing archive we can't actually verify against.
+    """
+    path = Path(directory) / f"{base_name}{suffix}"
+    if not path.exists():
+        return ExportStatus.MISSING, None
+
+    meta = read_exported_metadata(path)
+    if meta is None or meta.get("update_time") is None:
+        return ExportStatus.CURRENT, None
+
+    live_epoch = coerce_timestamp(live_update_time)
+    if live_epoch is None or meta["update_time"] >= live_epoch:
+        return ExportStatus.CURRENT, None
+
+    return ExportStatus.STALE, (live_epoch - meta["update_time"]) / 86400
+
+
 class OnConflict:
     """What to do when the target filename already exists."""
     RENAME = "rename"    # keep both: append " (2)", " (3)", ...
     REPLACE = "replace"  # overwrite the existing file
-    SKIP = "skip"        # leave the existing file alone, don't write
+    SKIP = "skip"        # leave the existing file alone *if it's still current*
 
 
-def resolve_output_path(directory, base_name: str, on_conflict: str = OnConflict.RENAME, suffix: str = ".md") -> Optional[Path]:
+def resolve_output_path(
+    directory, base_name: str, on_conflict: str = OnConflict.RENAME, suffix: str = ".md",
+    live_update_time=None,
+) -> Optional[Path]:
     """Return the Path to write to under `directory` for `base_name`, applying
     `on_conflict` if that name is already taken. Returns None only for SKIP
-    when the file already exists — the caller should leave it untouched."""
+    when the existing file is still CURRENT — a STALE one (conversation
+    changed since it was exported) is returned for overwriting even under
+    SKIP, since "skip" is meant to mean "don't redo unnecessary work", not
+    "never update anything"."""
     directory = Path(directory)
     candidate = directory / f"{base_name}{suffix}"
     if not candidate.exists():
@@ -156,7 +227,8 @@ def resolve_output_path(directory, base_name: str, on_conflict: str = OnConflict
     if on_conflict == OnConflict.REPLACE:
         return candidate
     if on_conflict == OnConflict.SKIP:
-        return None
+        status, _ = local_export_status(directory, base_name, live_update_time, suffix=suffix)
+        return None if status == ExportStatus.CURRENT else candidate
 
     n = 2
     while True:

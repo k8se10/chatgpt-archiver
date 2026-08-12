@@ -169,11 +169,20 @@ class ChatGPTSession:
         raise ApiError(f"{path} failed with HTTP {status}: {detail!r}")
 
     def iter_conversations(
-        self, page_size: int = 28, on_page: Optional[Callable[[int, int], None]] = None
+        self,
+        page_size: int = 28,
+        on_page: Optional[Callable[[int, int], None]] = None,
+        limit: Optional[int] = None,
     ) -> Iterator[dict]:
-        """Yield {id, title, update_time, create_time, ...} newest-updated first."""
+        """Yield {id, title, update_time, create_time, ...} newest-updated first.
+
+        `limit`, if given, stops after that many conversations total — e.g.
+        Smart Scan only needs the most-recently-updated ~150, not a full
+        paginated listing of a 1000+ conversation account.
+        """
         offset = 0
         total = None
+        yielded = 0
         while True:
             path = (
                 f"/backend-api/conversations?offset={offset}&limit={page_size}"
@@ -186,6 +195,9 @@ class ChatGPTSession:
                 return
             for item in items:
                 yield item
+                yielded += 1
+                if limit is not None and yielded >= limit:
+                    return
             offset += len(items)
             if on_page:
                 on_page(offset, total if total is not None else offset)
