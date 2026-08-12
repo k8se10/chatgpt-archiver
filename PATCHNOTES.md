@@ -6,13 +6,14 @@ All notable changes to the project, per release.
 
 ## Unreleased
 
-**Honesty note**: the token-refresh fix below is verified by a unit test
-against a fake driver (stale-token response detected, refreshed, retried,
-and a persistent failure correctly raised instead of silently swallowed) —
-it has not yet been confirmed live against a real ~1000-conversation export.
-The dated-filenames crash below *was* confirmed live (reported failing on
-every conversation) and the fix was verified against the real API response
-shapes that caused it, pulled live from chatgpt.com.
+## v0.2.0 (2026-08-12) — First public release
+
+**Honesty note**: the token-refresh-under-load fix below is verified by a
+unit test against a fake driver (stale-token/rate-limit responses detected,
+refreshed/backed-off, retried, and a persistent failure correctly raised
+instead of silently swallowed) — it has not been re-run against a real
+1000+ conversation live export since. Everything else below was confirmed
+live against the real chatgpt.com API and/or a real Chrome launch.
 
 ### Fixed
 - **Exports silently skipped every conversation as "no visible messages"
@@ -35,17 +36,16 @@ shapes that caused it, pulled live from chatgpt.com.
   retries up to 6 times before giving up with a real error. Also bumped
   the base per-request delay slightly (0.4s -> 0.6s) to make hitting the
   limit less likely in the first place.
-- **Every export failed with `argument must be int or float, not str`**,
-  introduced by the same-day dated-filenames feature below. Root cause:
-  `create_time`/`update_time` on items from `/backend-api/conversations`
-  are ISO 8601 strings (`"2026-08-09T19:19:09.712746Z"`), but per-message
-  `create_time` inside a conversation's own node mapping is a numeric unix
-  epoch — confirmed by querying both endpoints live. The filename code
-  assumed the numeric shape everywhere. Added `convert.coerce_timestamp()`
-  to accept either shape, used by both the filename and message-header
-  formatters. This also silently affected the conversation list's date
-  display the whole time (masked by a bare `except: pass`), now fixed too.
-
+- **Every export failed with `argument must be int or float, not str`.**
+  Root cause: `create_time`/`update_time` on items from
+  `/backend-api/conversations` are ISO 8601 strings
+  (`"2026-08-09T19:19:09.712746Z"`), but per-message `create_time` inside a
+  conversation's own node mapping is a numeric unix epoch — confirmed by
+  querying both endpoints live. The filename code assumed the numeric
+  shape everywhere. Added `convert.coerce_timestamp()` to accept either
+  shape, used by both the filename and message-header formatters. This
+  also silently affected the conversation list's date display the whole
+  time (masked by a bare `except: pass`), now fixed too.
 - **Rate-limit/token-refresh waits were invisible in the packaged app —
   looked frozen for up to 120s per retry.** The backoff messages only went
   through Python's `logging` module, which has nowhere to go in a
@@ -54,8 +54,6 @@ shapes that caused it, pulled live from chatgpt.com.
   `on_wait` callback, wired to both the scrolling log and the progress
   label, so "Rate limited by ChatGPT — waiting 10s… (attempt 2/6)" is
   actually visible while it's happening.
-
-### Fixed
 - **Reconnecting after closing the Chrome window errored instead of
   relaunching.** `self._driver` kept referencing the dead Selenium session
   after the user closed the automated Chrome window, so clicking "Launch
@@ -66,15 +64,13 @@ shapes that caused it, pulled live from chatgpt.com.
   instead of erroring.
 - **"Skip it" (file-conflict handling) still fetched the full conversation
   over the network before checking whether it needed to.** For a large
-  account this defeated the point of skipping -- resuming an export after
+  account this defeated the point of skipping — resuming an export after
   hitting a rate limit re-spent exactly the API calls "Skip it" was meant
   to avoid. The output path is now resolved from the local filesystem
   *before* any network call, so a skip is a pure local check with zero
   API cost. The export loop also now checks Chrome is still alive before
   each conversation and stops cleanly (instead of failing every remaining
   item one by one) if the window was closed mid-export.
-
-### Fixed
 - **Missing Chrome or a slow first-run chromedriver download both looked
   like the app was broken/frozen.** Chrome is a genuine external
   prerequisite this app can't bundle (it drives your own Chrome
@@ -112,7 +108,6 @@ shapes that caused it, pulled live from chatgpt.com.
   `(2)`/`(3)` suffix — the previous, only, behavior), replace it, or skip
   it and leave the existing file untouched. Useful for re-running an
   export over an existing archive without duplicating everything.
-
 - **Progress bar + incremental log lines while listing conversations.**
   Listing a 1000+ conversation account previously gave zero feedback for
   the entire ~38-page fetch; it now logs and updates a progress bar every
@@ -133,5 +128,5 @@ shapes that caused it, pulled live from chatgpt.com.
   (see Fixed, above) gets it through eventually, but the wall-clock
   ceiling for very large accounts is set by OpenAI's rate limits, not
   anything tunable in this project. Added under Known Limitations in
-  `README.md`, with a pointer to the new Skip-existing-files option for
-  resuming an interrupted run.
+  `README.md`, with a pointer to the Skip-existing-files option and the
+  bulk-import path for resuming/avoiding rate limits entirely.

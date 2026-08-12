@@ -6,6 +6,16 @@ entirely: instead of scraping the page, it asks the same backend API the
 ChatGPT web app itself uses for the conversation's raw message data, and
 writes it out as clean Markdown.
 
+## Download
+
+Grab the latest `ChatGPT Archiver.exe` from
+[Releases](https://github.com/k8se10/chatgpt-archiver/releases) — a single
+file, no installer, no Python required. Double-click it and go. The only
+thing it needs already on your machine is Google Chrome (it drives your
+own Chrome, in its own separate automation profile, rather than bundling
+a browser — see How it works below); if Chrome isn't found it'll tell you
+clearly instead of failing silently.
+
 ## How it works
 
 1. A small, dedicated Chrome window (its own profile — not your everyday
@@ -46,8 +56,8 @@ network requests at all.
 
 ## Requirements
 
-- Windows, with Google Chrome installed
-- Python 3.10+
+- **Prebuilt `.exe` (Download above):** Windows + Google Chrome. Nothing else.
+- **Running from source / building it yourself:** also Python 3.10+.
 
 ## Running from source
 
@@ -65,8 +75,8 @@ Select the conversations you want, pick an output folder, and hit
 ## Building the standalone .exe
 
 ```powershell
-.\build.ps1            # dist\ChatGPT Archiver\ChatGPT Archiver.exe
-.\build.ps1 -OneFile   # single-file exe (slower to start, easier to share)
+.\build.ps1            # dist\ChatGPT Archiver\ChatGPT Archiver.exe (onedir, faster startup)
+.\build.ps1 -OneFile   # dist\ChatGPT Archiver.exe (single file — what's attached to Releases)
 ```
 
 ## Privacy
