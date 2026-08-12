@@ -74,6 +74,20 @@ shapes that caused it, pulled live from chatgpt.com.
   each conversation and stops cleanly (instead of failing every remaining
   item one by one) if the window was closed mid-export.
 
+### Fixed
+- **Missing Chrome or a slow first-run chromedriver download both looked
+  like the app was broken/frozen.** Chrome is a genuine external
+  prerequisite this app can't bundle (it drives your own Chrome
+  deliberately, rather than shipping a browser). It now checks the
+  standard install locations directly before doing anything else and
+  raises a clear "install Chrome from google.com/chrome" message instead
+  of a raw Selenium stack trace if it's missing (verified against a
+  simulated no-Chrome-installed case). The one-time chromedriver download
+  on first run (needs internet) now reports through the same visible
+  status mechanism used for rate-limit waits, instead of blocking
+  silently — verified live: "Setting up the Chrome driver…" / "Launching
+  Chrome…" both actually show up.
+
 ### Added
 - **Import from ChatGPT's own bulk data export — the real fix for rate
   limits on large accounts, not a workaround.** The live path makes one

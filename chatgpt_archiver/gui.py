@@ -173,10 +173,14 @@ class ArchiverApp(tk.Tk):
                 self._driver = None
                 self._session = None
             if self._driver is None:
-                self._driver = browser.create_driver()
+                self._driver = browser.create_driver(on_status=self._on_wait)
                 self._session = api.ChatGPTSession(self._driver, on_wait=self._on_wait)
             api.ensure_on_chatgpt(self._driver)
             self._try_get_token()
+        except browser.ChromeNotFoundError as e:
+            self._log(str(e))
+            self.after(0, lambda: messagebox.showerror("Chrome not found", str(e)))
+            self.after(0, lambda: self.connect_btn.configure(state="normal"))
         except Exception as e:
             logger.exception("Connect failed")
             self._log(f"Unexpected error: {e}")
