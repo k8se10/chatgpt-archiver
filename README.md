@@ -8,7 +8,7 @@ writes it out as clean Markdown.
 
 ## Download
 
-Grab the latest `ChatGPT Archiver.exe` from
+Grab the latest `ChatGPT-Archiver.exe` from
 [Releases](https://github.com/k8se10/chatgpt-archiver/releases) — a single
 file, no installer, no Python required. Double-click it and go. The only
 thing it needs already on your machine is Google Chrome (it drives your
