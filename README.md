@@ -46,13 +46,14 @@ Limitations).
 
 For a full archive, sidestep that entirely: in chatgpt.com, go to
 **Settings → Data controls → Export data**. OpenAI emails you a `.zip`
-(can take minutes to hours to generate) containing `conversations.json` —
-every conversation you have, in the same format the live API returns,
+(can take minutes to hours to generate) containing every conversation you
+have — as one or more `conversations*.json` files (OpenAI shards this
+across several files, e.g. `conversations-000.json`, `conversations-001.json`,
+… for any non-trivial account) — in the same format the live API returns,
 generated once, server-side, with zero requests from this app. Click
-**Import Export File…** in the app and pick that `.zip` (or the
-`conversations.json` inside it) — same conversation list, same selection
-UI, same Markdown output, but reading a local file instead of making any
-network requests at all.
+**Import Export File…** in the app and pick that `.zip` — same
+conversation list, same selection UI, same Markdown output, but reading
+a local file instead of making any network requests at all.
 
 ## Requirements
 

@@ -6,6 +6,28 @@ All notable changes to the project, per release.
 
 ## Unreleased
 
+## v0.2.1 (2026-08-12) — Bulk import didn't actually work
+
+**Honesty note**: v0.2.0's bulk-import format assumptions were "confirmed"
+only by cross-referencing other people's write-ups, since we had no real
+export to test against yet — flagged explicitly as unverified at the time.
+That gap turned out to matter: it didn't handle the real format. This
+release is verified against an actual ~200MB, 1051-conversation ChatGPT
+export downloaded by the user — every single conversation in it now loads
+and converts correctly, in well under a second.
+
+### Fixed
+- **Import Export File… didn't find anything in a real export.** OpenAI
+  shards conversation data across multiple files for any non-trivial
+  account — `conversations-000.json` through `conversations-010.json` in
+  the real export tested, not a single `conversations.json` — but the
+  importer only ever looked for the exact unsharded filename. Reworked to
+  match any `conversations*.json` file in the zip (covering both the
+  sharded and unsharded forms) and concatenate all of them. Verified
+  against the real 1051-conversation export: all 11 shards found, all
+  1051 conversations loaded and flowed through the conversion pipeline
+  with zero failures.
+
 ## v0.2.0 (2026-08-12) — First public release
 
 **Honesty note**: the token-refresh-under-load fix below is verified by a
