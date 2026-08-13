@@ -33,7 +33,9 @@ clearly instead of failing silently.
    history is archived too and skips listing it — this is what actually
    avoids hundreds of API calls on a large account, not just avoiding
    re-fetching content. **Full Scan** lists your entire account instead, if
-   you want to check everything explicitly.
+   you want to check everything explicitly. Once a scan has fully synced a
+   folder, a small cache file records how far it got, so every Smart Scan
+   after that only checks what's changed since — usually one page, not 150.
 4. Each conversation comes back as a full tree of every edit/regeneration
    branch. The tool walks the single path that's actually shown on screen
    (from `current_node` back to the root) and drops anything that never
@@ -48,7 +50,11 @@ clearly instead of failing silently.
    red = longer ago) in the list, with a **Select Outdated** button to
    grab all of them in one click. **Skip it** (the default conflict
    policy) means "skip it unless it's changed" — a stale file gets
-   refreshed, not silently left behind.
+   refreshed, not silently left behind. An existing export that still has
+   an un-embedded image placeholder (see Known Limitations) also shows up
+   as outdated, even if the conversation itself hasn't changed — so
+   re-running an export after an update that adds image support fills
+   images in automatically instead of leaving old exports behind.
 
 ## Large accounts: use ChatGPT's own bulk export instead
 
@@ -115,9 +121,13 @@ Selected**.
 - Windows only for now (the `.exe` build and default profile path assume
   Windows; the Python code itself is mostly cross-platform if you adjust
   `browser.profile_dir()`).
-- Attachments (images, files) are exported as a `*[image attached]*` /
-  `*[unsupported attachment]*` placeholder, not the actual file — the API
-  returns a pointer, not the binary.
+- **Images are fetched and embedded inline** (as base64, right in the
+  `.md` file — no separate image files to keep track of) when exporting
+  via the live browser session. This only works for the live path — the
+  bulk **Import Export File…** path has no browser session to fetch
+  through, so images there (and anything over 8 MB, and non-image
+  attachments like other files) still show as a `*[image attached]*` /
+  `*[unsupported attachment]*` placeholder instead.
 - Only exports conversations, not Projects/custom GPT metadata.
 - **Large accounts are slow — Smart Scan and "Skip it" both help, but
   don't eliminate this.** Every conversation still exported is a separate

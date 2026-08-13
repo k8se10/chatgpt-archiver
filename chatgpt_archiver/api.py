@@ -99,6 +99,23 @@ def _fetch_with_status(driver: WebDriver, token: str, path: str) -> dict:
     return _run_async_fetch(driver, expr)
 
 
+def _fetch_blob_as_data_url(driver: WebDriver, url: str) -> str:
+    """Fetch a (typically presigned, no-auth-needed) blob URL and return it as a
+    data: URL string (base64, with the content-type the server actually sent) --
+    done via FileReader in the page rather than shipping raw bytes through the
+    Selenium wire protocol as anything fancier than a plain JSON string."""
+    js_url = json.dumps(url)
+    expr = f"""
+        fetch({js_url}).then(r => r.blob()).then(blob => new Promise((resolve, reject) => {{
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('FileReader failed'));
+            reader.readAsDataURL(blob);
+        }}))
+    """
+    return _run_async_fetch(driver, expr)
+
+
 class ChatGPTSession:
     """A driver + bearer token, resilient to token expiry and rate limiting mid-export."""
 
@@ -208,6 +225,31 @@ class ChatGPTSession:
     def get_conversation(self, conversation_id: str) -> dict:
         """Fetch the full node mapping + active branch pointer for one conversation."""
         return self._get(f"/backend-api/conversation/{conversation_id}")
+
+    def download_file_as_data_url(self, asset_pointer: str) -> Optional[str]:
+        """Resolve an image_asset_pointer (e.g. "file-service://file-Abc123")
+        to a self-contained "data:<mime>;base64,..." string, for inline
+        embedding into the exported Markdown. Two-step, matching what the
+        ChatGPT frontend itself does: ask /backend-api/files/{id}/download
+        for a short-lived presigned blob URL, then fetch that blob directly
+        (it doesn't need our bearer token).
+
+        Returns None (never raises) if anything about this fails -- an
+        unrecognized pointer format, a 404, a network hiccup -- so a caller
+        can fall back to the old placeholder text instead of losing the
+        whole conversation's export over one image."""
+        try:
+            file_id = asset_pointer.split("://", 1)[-1]
+            if not file_id:
+                return None
+            meta = self._get(f"/backend-api/files/{file_id}/download")
+            download_url = meta.get("download_url") if isinstance(meta, dict) else None
+            if not download_url:
+                return None
+            return _fetch_blob_as_data_url(self.driver, download_url)
+        except Exception:
+            logger.exception("Failed to download file %s", asset_pointer)
+            return None
 
 
 def throttle():

@@ -12,12 +12,20 @@ under non-"final" channels even though they never render on screen).
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 _VISIBLE_CHANNELS = (None, "final")
 _VISIBLE_ROLES = ("user", "assistant")
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _METADATA_RE = re.compile(r"^<!--\s*chatgpt-archiver:\s*id=(\S+)\s+update_time=(\S+)\s*-->\s*$")
+
+# Placeholder used only when an image could plausibly still be embedded next
+# time (fetch failed, or no live session was available to try) -- deliberately
+# distinct from the "too large to embed" placeholder below, so
+# local_export_status() can flag *this* one as worth retrying without looping
+# forever on an image that will never fit under the size cap.
+_PLACEHOLDER_IMAGE_RETRY = "*[image attached]*"
+_PLACEHOLDER_IMAGE_TOO_LARGE = "*[image attached — too large to embed]*"
 
 
 def _active_path(mapping: dict, current_node: Optional[str]) -> list:
@@ -33,18 +41,34 @@ def _active_path(mapping: dict, current_node: Optional[str]) -> list:
     return path
 
 
-def _part_to_text(part) -> str:
+def _part_to_text(part, fetch_image: Optional[Callable[[dict], Optional[str]]] = None) -> str:
     if isinstance(part, str):
         return part
     if isinstance(part, dict):
         if part.get("content_type") == "image_asset_pointer":
-            return "*[image attached]*"
+            if fetch_image is not None:
+                result = fetch_image(part)
+                if result:
+                    return f"![image]({result})"
+                if result is False:
+                    # Deliberately skipped (e.g. over the size cap) -- this
+                    # will never succeed, so use a placeholder that
+                    # local_export_status() won't keep flagging as outdated.
+                    return _PLACEHOLDER_IMAGE_TOO_LARGE
+            return _PLACEHOLDER_IMAGE_RETRY
         return "*[unsupported attachment]*"
     return ""
 
 
-def extract_visible_messages(conversation: dict) -> list:
-    """Return [{role, text, create_time}] for the path currently shown on screen."""
+def extract_visible_messages(
+    conversation: dict, fetch_image: Optional[Callable[[dict], Optional[str]]] = None
+) -> list:
+    """Return [{role, text, create_time}] for the path currently shown on screen.
+
+    `fetch_image`, if given, is called with each image_asset_pointer part dict
+    and should return a "data:<mime>;base64,..." string to embed inline, or
+    None to fall back to the plain "*[image attached]*" placeholder (e.g. no
+    live browser session to fetch through, or the download failed)."""
     mapping = conversation.get("mapping", {})
     path = _active_path(mapping, conversation.get("current_node"))
 
@@ -61,7 +85,7 @@ def extract_visible_messages(conversation: dict) -> list:
         if message.get("channel") not in _VISIBLE_CHANNELS:
             continue
         parts = (message.get("content") or {}).get("parts") or []
-        text = "\n\n".join(_part_to_text(p) for p in parts).strip()
+        text = "\n\n".join(_part_to_text(p, fetch_image) for p in parts).strip()
         if not text:
             continue
         messages.append({
@@ -175,31 +199,48 @@ class ExportStatus:
     CURRENT = "current"  # exported and (as far as we can tell) still up to date
 
 
+def _has_retryable_image_placeholder(path) -> bool:
+    """True if the file still has an un-embedded (but plausibly embeddable)
+    image placeholder -- either exported before image embedding existed, or
+    embedding failed at the time (no live session, download error). Only
+    checked when the file would otherwise be reported CURRENT, so this
+    doesn't add a full-file read to every already-stale/missing file."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return _PLACEHOLDER_IMAGE_RETRY in f.read()
+    except OSError:
+        return False
+
+
 def local_export_status(directory, base_name: str, live_update_time, suffix: str = ".md"):
-    """Returns (status, stale_days). stale_days is a float (>= 0) only when
-    status == STALE — how long ago the conversation changed relative to
-    when it was last exported — and None otherwise. Used by both Smart Scan
-    (does this look already archived?) and "Skip it" (should this stale copy
-    actually get refreshed instead of left alone?).
+    """Returns (status, stale_days). stale_days is a float (>= 0) when
+    status == STALE because the conversation itself changed since export,
+    or None when STALE for a different reason (an un-embedded image
+    placeholder that could now be filled in) or when status is MISSING/
+    CURRENT. Used by both Smart Scan (does this look already archived?) and
+    "Skip it" (should this stale copy actually get refreshed instead of
+    left alone?).
 
     A file with no embedded metadata (exported by an older version of this
     tool, or not one of ours) or a live_update_time we can't parse is
-    reported CURRENT — we'd rather under-flag than force surprise
-    re-exports of an existing archive we can't actually verify against.
+    reported CURRENT (modulo the image-placeholder check below) — we'd
+    rather under-flag than force surprise re-exports of an existing archive
+    we can't actually verify against.
     """
     path = Path(directory) / f"{base_name}{suffix}"
     if not path.exists():
         return ExportStatus.MISSING, None
 
     meta = read_exported_metadata(path)
-    if meta is None or meta.get("update_time") is None:
-        return ExportStatus.CURRENT, None
+    if meta is not None and meta.get("update_time") is not None:
+        live_epoch = coerce_timestamp(live_update_time)
+        if live_epoch is not None and meta["update_time"] < live_epoch:
+            return ExportStatus.STALE, (live_epoch - meta["update_time"]) / 86400
 
-    live_epoch = coerce_timestamp(live_update_time)
-    if live_epoch is None or meta["update_time"] >= live_epoch:
-        return ExportStatus.CURRENT, None
+    if _has_retryable_image_placeholder(path):
+        return ExportStatus.STALE, None
 
-    return ExportStatus.STALE, (live_epoch - meta["update_time"]) / 86400
+    return ExportStatus.CURRENT, None
 
 
 class OnConflict:

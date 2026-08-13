@@ -4,7 +4,124 @@ All notable changes to the project, per release.
 
 ---
 
-## Unreleased
+## v0.3.2 (2026-08-13) — Inline image embedding
+
+**Honesty note**: image embedding is unit-tested for the Markdown-generation
+side (`convert.extract_visible_messages(fetch_image=...)` — placeholder
+fallback on no-fetcher, success, and failure all covered) and the live piece
+(`ChatGPTSession.download_file_as_data_url` — the actual
+`/backend-api/files/{id}/download` → presigned blob URL → base64 round trip)
+is confirmed working against a real ChatGPT-served image on a live account —
+images render correctly in a Markdown previewer. Separately, the JS/Selenium
+fetch→blob→FileReader→base64 mechanism itself was verified byte-for-byte
+lossless with a synthetic PNG round trip (isolated Chrome profile, no
+ChatGPT auth needed), ruling out data corruption in that layer specifically.
+Note that the base64 payload is only ever meant to render as a picture in an
+actual Markdown renderer (VS Code preview, Obsidian, etc.) — opened in a
+plain text editor, it correctly shows as a long, unreadable base64 string;
+that's expected, not a bug.
+
+### Added
+- **Images are now fetched and embedded inline** as base64 `data:` URLs
+  directly in the exported `.md`, when exporting via the live browser
+  session (not the bulk file-import path — see Known Limitations in the
+  README). Skips embedding (falls back to the placeholder) for anything
+  over 8 MB.
+- **Existing exports with an un-embedded image placeholder are now flagged
+  as outdated** (yellow, "[image not embedded]") even though the
+  conversation itself hasn't changed — so Smart Scan / Select Outdated /
+  "Skip it" all correctly offer to fill them in now that embedding exists,
+  instead of only ever catching genuinely-changed conversations. The
+  "too large to embed" case (over 8 MB) is deliberately excluded from this
+  — it'll never fit under the cap, so it isn't repeatedly re-flagged.
+  Unit-tested (retryable placeholder → outdated; oversize placeholder →
+  not re-flagged; genuine timestamp staleness still takes priority and
+  isn't swallowed by the placeholder check).
+
+### Fixed
+- **Smart Scan's fast cached path could never actually find those
+  now-outdated placeholder files.** Reported directly after shipping the
+  above: on an account with an existing watermark cache from before image
+  support existed, Smart Scan's fast path only ever looks at conversations
+  updated *after* the cached watermark — it never re-opens the older files
+  that were already trusted as "fully archived," so it could never see
+  their placeholder text no matter how many times you ran it. Fixed by
+  versioning the cache (`scan_cache.CACHE_VERSION`): a cache written before
+  this fix is no longer trusted for the fast path. Smart Scan now does one
+  full recheck the first time it sees an old cache, then re-saves it at
+  the current version — after that one-time pass, the fast path resumes
+  as normal. Unit-tested (`scan_cache.is_image_aware`).
+  **Known residual limitation**: this closes the gap for the one-time
+  migration, but if a *specific* image fails to embed later (a transient
+  network error during an otherwise all-successful export) the watermark
+  can still advance past it, since a placeholder alone isn't currently
+  treated as an export failure. Re-running a Full Scan will always catch
+  it regardless — just not necessarily the next fast Smart Scan. Flagging
+  this rather than solving it now, since blocking the watermark on "zero
+  images pending, ever" would make Smart Scan permanently slow on any
+  account if the image API integration itself has an issue — worse than
+  the gap it'd close, especially before that integration is confirmed
+  working live.
+
+## v0.3.1 (2026-08-12) — Watermark cache for repeat scans
+
+**Honesty note**: `scan_cache.can_advance()` — the gate deciding whether a
+watermark is allowed to advance — is unit-tested for every safety-relevant
+case (partial selection, heuristic-mode exclusion, unknown-mode-fails-
+closed, vacuous empty-scan case). The cached fast-path's pagination
+stop-early logic is verified against the real live API (simulated a
+watermark at conversation #2's `update_time`; correctly returned exactly
+the single newest conversation as "changed", nothing more, nothing less).
+Not yet verified: a full end-to-end cycle (export with the cache unset,
+confirm it gets written, run Smart Scan again and confirm it actually
+uses the fast path) — the pieces are each verified, the full chain hasn't
+been watched end to end yet.
+
+### Added
+- **Smart Scan gets faster every time you use it on the same output
+  folder**, instead of re-checking the same ~150 conversations on every
+  run. After a scan proves full coverage — a Full Scan, a bulk import, or
+  a Smart Scan itself once it's already using the cache — and that batch
+  exports with zero failures, a small `.chatgpt-archiver-cache.json` is
+  written next to your `.md` files recording how far the archive is
+  caught up to. The next Smart Scan reads it back and only fetches
+  conversations updated since then, stopping the moment it reaches
+  already-covered ones — for a regularly-used archive this is usually a
+  single page instead of a 150-conversation sample.
+- **This only ever advances when it can be proven safe.** The first-visit
+  ratio-based heuristic (no cache yet, sampling ~150 and inferring the
+  rest) never writes the cache — it's a best-effort guess, and a wrong
+  guess there would silently skip a conversation forever rather than just
+  slowing down one scan. Only a scan that covers a real, provable window
+  (Full Scan, an already-cached Smart Scan, or a bulk import), fully
+  exported with nothing missed, is allowed to move the watermark forward.
+  A partial export (only some of what needed updating got selected) never
+  advances it either.
+- The cache lives inside the output folder itself (`.chatgpt-archiver-
+  cache.json`), so it travels with the archive and a different/empty
+  folder correctly starts fresh rather than reading stale state from
+  elsewhere.
+
+### Fixed
+- **Full Scan / Smart Scan could crash with `main thread is not in main
+  loop`, or just hang.** The root cause: background threads were calling
+  `self.after(0, ...)` directly to schedule UI updates, which is not
+  reliably safe in Tkinter when used to *register a new callback* from a
+  non-main thread — it can raise that exact `RuntimeError`, and depending
+  on timing could also just leave the window looking frozen instead.
+  Reproduced directly with a real `threading.Thread`-driven test (a
+  single-threaded direct-call test earlier had missed this entirely, since
+  it never exercised real cross-thread scheduling) and confirmed against a
+  live 1058-conversation account.
+  **Honesty note**: verified via a real background-thread Full Scan
+  against a live account (1058 conversations, 1054 correctly matched as
+  already-current, 4 correctly detected as new) with no crash.
+- Fixed a related silent bug where `output_dir` was read via
+  `self.output_var.get()` (a `tk.StringVar`) from background threads —
+  not thread-safe, and could silently resolve to the wrong folder, making
+  an entire existing archive look "missing." `output_dir` is now always
+  read on the main thread inside each button handler and passed
+  explicitly into every background-thread function.
 
 ## v0.3.0 (2026-08-12) — Smart Scan + update detection
 
